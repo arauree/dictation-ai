@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>Dictée IA</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: Arial, sans-serif;
+      background: #fff;
+      color: #202124;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 21px;
+    }
+
+    .description {
+      margin: 0 0 18px;
+      font-size: 13px;
+      color: #5f6368;
+      line-height: 1.5;
+    }
+
+    button {
+      width: 100%;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      padding: 10px;
+      margin-top: 8px;
+      background: #fff;
+      color: #202124;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #f8f9fa;
+    }
+
+    .primary {
+      background: #1a73e8;
+      border-color: #1a73e8;
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .primary:hover {
+      background: #1765c1;
+    }
+
+    .recording {
+      background: #d93025;
+      border-color: #d93025;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 240px;
+      margin-top: 16px;
+      padding: 10px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      resize: vertical;
+      font: inherit;
+      line-height: 1.5;
+    }
+
+    .status {
+      margin-top: 12px;
+      padding: 10px;
+      background: #f1f3f4;
+      border-radius: 4px;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .progress {
+      display: none;
+      margin-top: 10px;
+      height: 6px;
+      border-radius: 10px;
+      overflow: hidden;
+      background: #e8eaed;
+    }
+
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: #1a73e8;
+      transition: width .2s ease;
+    }
+
+    .small {
+      margin-top: 14px;
+      font-size: 11px;
+      color: #5f6368;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+
+<body>
+
+  <h1>🎙️ Dictée IA</h1>
+
+  <p class="description">
+    Enregistrez votre voix puis transcrivez-la localement avec Whisper.
+  </p>
+
+  <button
+    id="recordButton"
+    class="primary"
+    onclick="toggleRecording()">
+    Commencer l'enregistrement
+  </button>
+
+  <button
+    id="transcribeButton"
+    onclick="transcribeAudio()"
+    disabled>
+    Transcrire
+  </button>
+
+  <textarea
+    id="transcript"
+    placeholder="La transcription apparaîtra ici..."></textarea>
+
+  <button
+    onclick="sendToGoogleDocs()">
+    Insérer dans Google Docs
+  </button>
+
+  <button
+    onclick="clearAll()">
+    Effacer
+  </button>
+
+  <div
+    id="status"
+    class="status">
+    Prêt.
+  </div>
+
+  <div
+    id="progress"
+    class="progress">
+    <div
+      id="progressBar"
+      class="progress-bar">
+    </div>
+  </div>
+
+  <p class="small">
+    Le premier chargement de Whisper peut être long car le modèle doit être téléchargé.
+  </p>
+
+
+  <script type="module">
+
+    import {
+      pipeline,
+      env
+    } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0';
+
+
+    /* =====================================================
+       CONFIGURATION TRANSFORMERS.JS
+       ===================================================== */
+
+    env.allowRemoteModels = true;
+    env.allowLocalModels = false;
+    env.useBrowserCache = true;
+    env.useWasmCache = true;
+
+    env.backends.onnx.wasm.numThreads = 2;
+
+
+    /* =====================================================
+       COMMUNICATION AVEC LA SIDEBAR GOOGLE DOCS
+       ===================================================== */
+
+    const params =
+      new URLSearchParams(
+        window.location.search
+      );
+
+    const sessionToken =
+      params.get('token') || '';
+
+
+    function sendMessageToParent(payload) {
+
+      if (!window.opener) {
+        return;
+      }
+
+      window.opener.postMessage(
+        {
+          source: 'google-docs-dictation',
+          token: sessionToken,
+          ...payload
+        },
+        '*'
+      );
+    }
+
+
+    /* =====================================================
+       VARIABLES
+       ===================================================== */
+
+    let mediaStream = null;
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let recordedBlob = null;
+
+    let transcriber = null;
+    let transcriberPromise = null;
+
+
+    const recordButton =
+      document.getElementById(
+        'recordButton'
+      );
+
+    const transcribeButton =
+      document.getElementById(
+        'transcribeButton'
+      );
+
+    const transcriptBox =
+      document.getElementById(
+        'transcript'
+      );
+
+    const statusBox =
+      document.getElementById(
+        'status'
+      );
+
+    const progressBox =
+      document.getElementById(
+        'progress'
+      );
+
+    const progressBar =
+      document.getElementById(
+        'progressBar'
+      );
+
+
+    /* =====================================================
+       STATUS
+       ===================================================== */
+
+    function showStatus(message) {
+      statusBox.textContent =
+        message;
+    }
+
+
+    function setProgress(value) {
+
+      progressBox.style.display =
+        'block';
+
+      const percent =
+        Math.max(
+          0,
+          Math.min(
+            100,
+            Number(value) || 0
+          )
+        );
+
+      progressBar.style.width =
+        percent + '%';
+    }
+
+
+    function hideProgress() {
+
+      progressBox.style.display =
+        'none';
+
+      progressBar.style.width =
+        '0%';
+    }
+
+
+    /* =====================================================
+       WHISPER
+       ===================================================== */
+
+    async function getTranscriber() {
+
+      if (transcriber) {
+        return transcriber;
+      }
+
+      if (transcriberPromise) {
+        return transcriberPromise;
+      }
+
+      showStatus(
+        'Chargement de Whisper...'
+      );
+
+      setProgress(0);
+
+      transcriberPromise =
+        pipeline(
+          'automatic-speech-recognition',
+          'onnx-community/whisper-tiny',
+          {
+            dtype: 'q8',
+            device: 'wasm',
+
+            progress_callback:
+              function(info) {
+
+                if (
+                  info &&
+                  typeof info.progress ===
+                    'number'
+                ) {
+                  setProgress(
+                    info.progress
+                  );
+                }
+
+              }
+          }
+        );
+
+      try {
+
+        transcriber =
+          await transcriberPromise;
+
+        showStatus(
+          'Whisper est prêt.'
+        );
+
+        setProgress(100);
+
+        setTimeout(
+          hideProgress,
+          500
+        );
+
+        return transcriber;
+
+      } catch (error) {
+
+        transcriberPromise =
+          null;
+
+        hideProgress();
+
+        throw error;
+      }
+    }
+
+
+    /* =====================================================
+       ENREGISTREMENT
+       ===================================================== */
+
+    async function toggleRecording() {
+
+      if (
+        mediaRecorder &&
+        mediaRecorder.state ===
+          'recording'
+      ) {
+        stopRecording();
+      } else {
+        await startRecording();
+      }
+    }
+
+
+    async function startRecording() {
+
+      if (
+        !navigator.mediaDevices ||
+        !navigator.mediaDevices.getUserMedia
+      ) {
+
+        showStatus(
+          'Votre navigateur ne permet pas l’accès au microphone.'
+        );
+
+        return;
+      }
+
+      try {
+
+        mediaStream =
+          await navigator.mediaDevices
+            .getUserMedia({
+              audio: true
+            });
+
+        audioChunks = [];
+        recordedBlob = null;
+
+        mediaRecorder =
+          new MediaRecorder(
+            mediaStream
+          );
+
+        mediaRecorder.ondataavailable =
+          function(event) {
+
+            if (
+              event.data &&
+              event.data.size > 0
+            ) {
+
+              audioChunks.push(
+                event.data
+              );
+            }
+          };
+
+
+        mediaRecorder.onstop =
+          function() {
+
+            recordedBlob =
+              new Blob(
+                audioChunks,
+                {
+                  type:
+                    mediaRecorder.mimeType ||
+                    'audio/webm'
+                }
+              );
+
+            transcribeButton.disabled =
+              false;
+
+            recordButton.textContent =
+              'Refaire un enregistrement';
+
+            recordButton.classList.remove(
+              'recording'
+            );
+
+            showStatus(
+              'Enregistrement terminé.'
+            );
+
+            if (mediaStream) {
+
+              mediaStream
+                .getTracks()
+                .forEach(
+                  function(track) {
+                    track.stop();
+                  }
+                );
+
+              mediaStream = null;
+            }
+          };
+
+
+        mediaRecorder.start();
+
+        recordButton.textContent =
+          'Arrêter';
+
+        recordButton.classList.add(
+          'recording'
+        );
+
+        transcribeButton.disabled =
+          true;
+
+        showStatus(
+          'Enregistrement en cours...'
+        );
+
+      } catch (error) {
+
+        console.error(error);
+
+        showStatus(
+          'Microphone refusé ou inaccessible.'
+        );
+      }
+    }
+
+
+    function stopRecording() {
+
+      if (
+        mediaRecorder &&
+        mediaRecorder.state ===
+          'recording'
+      ) {
+
+        mediaRecorder.stop();
+      }
+    }
+
+
+    /* =====================================================
+       TRANSCRIPTION
+       ===================================================== */
+
+    async function transcribeAudio() {
+
+      if (!recordedBlob) {
+
+        showStatus(
+          'Aucun enregistrement.'
+        );
+
+        return;
+      }
+
+      transcribeButton.disabled =
+        true;
+
+      recordButton.disabled =
+        true;
+
+      try {
+
+        showStatus(
+          'Préparation de l’audio...'
+        );
+
+        const audio =
+          await convertTo16kMono(
+            recordedBlob
+          );
+
+        const pipe =
+          await getTranscriber();
+
+        showStatus(
+          'Transcription en cours...'
+        );
+
+        const result =
+          await pipe(
+            audio,
+            {
+              language: 'fr',
+              task: 'transcribe',
+              chunk_length_s: 30,
+              stride_length_s: 5
+            }
+          );
+
+        const text =
+          result &&
+          result.text
+            ? result.text.trim()
+            : '';
+
+        transcriptBox.value =
+          cleanText(text);
+
+        showStatus(
+          text
+            ? 'Transcription terminée.'
+            : 'Aucun texte reconnu.'
+        );
+
+      } catch (error) {
+
+        console.error(error);
+
+        showStatus(
+          'Erreur : ' +
+          (
+            error &&
+            error.message
+              ? error.message
+              : String(error)
+          )
+        );
+
+      } finally {
+
+        transcribeButton.disabled =
+          !recordedBlob;
+
+        recordButton.disabled =
+          false;
+      }
+    }
+
+
+    /* =====================================================
+       AUDIO → MONO 16 KHZ
+       ===================================================== */
+
+    async function convertTo16kMono(blob) {
+
+      const arrayBuffer =
+        await blob.arrayBuffer();
+
+      const AudioContextClass =
+        window.AudioContext ||
+        window.webkitAudioContext;
+
+      if (!AudioContextClass) {
+
+        throw new Error(
+          'AudioContext indisponible.'
+        );
+      }
+
+      const context =
+        new AudioContextClass();
+
+      let audioBuffer;
+
+      try {
+
+        audioBuffer =
+          await context.decodeAudioData(
+            arrayBuffer
+          );
+
+      } finally {
+
+        try {
+
+          await context.close();
+
+        } catch (error) {
+          // Rien à faire.
+        }
+      }
+
+
+      const sourceRate =
+        audioBuffer.sampleRate;
+
+      const sourceLength =
+        audioBuffer.length;
+
+      const channelCount =
+        audioBuffer.numberOfChannels;
+
+
+      /* MONO */
+
+      const mono =
+        new Float32Array(
+          sourceLength
+        );
+
+      for (
+        let channel = 0;
+        channel < channelCount;
+        channel++
+      ) {
+
+        const channelData =
+          audioBuffer.getChannelData(
+            channel
+          );
+
+        for (
+          let i = 0;
+          i < sourceLength;
+          i++
+        ) {
+
+          mono[i] +=
+            channelData[i] /
+            channelCount;
+        }
+      }
+
+
+      /* DÉJÀ 16 KHZ */
+
+      if (
+        sourceRate === 16000
+      ) {
+
+        return mono;
+      }
+
+
+      /* RÉ-ÉCHANTILLONNAGE */
+
+      const targetLength =
+        Math.round(
+          mono.length *
+          16000 /
+          sourceRate
+        );
+
+      const output =
+        new Float32Array(
+          targetLength
+        );
+
+      const ratio =
+        sourceRate / 16000;
+
+
+      for (
+        let i = 0;
+        i < targetLength;
+        i++
+      ) {
+
+        const position =
+          i * ratio;
+
+        const left =
+          Math.floor(position);
+
+        const right =
+          Math.min(
+            left + 1,
+            mono.length - 1
+          );
+
+        const fraction =
+          position - left;
+
+        output[i] =
+          mono[left] *
+            (1 - fraction) +
+          mono[right] *
+            fraction;
+      }
+
+      return output;
+    }
+
+
+    /* =====================================================
+       NETTOYAGE
+       ===================================================== */
+
+    function cleanText(text) {
+
+      return String(text || '')
+        .replace(
+          /\s+/g,
+          ' '
+        )
+        .replace(
+          /\s+([,.!?;:])/g,
+          '$1'
+        )
+        .trim();
+    }
+
+
+    /* =====================================================
+       ENVOYER À GOOGLE DOCS
+       ===================================================== */
+
+    function sendToGoogleDocs() {
+
+      const text =
+        transcriptBox.value.trim();
+
+      if (!text) {
+
+        showStatus(
+          'Aucun texte à envoyer.'
+        );
+
+        return;
+      }
+
+      sendMessageToParent({
+        type:
+          'VOICE_TRANSCRIPT',
+
+        text:
+          text
+      });
+
+      showStatus(
+        'Texte envoyé à Google Docs.'
+      );
+    }
+
+
+    /* =====================================================
+       EFFACER
+       ===================================================== */
+
+    function clearAll() {
+
+      transcriptBox.value =
+        '';
+
+      audioChunks = [];
+      recordedBlob = null;
+
+      transcribeButton.disabled =
+        true;
+
+      recordButton.disabled =
+        false;
+
+      recordButton.textContent =
+        'Commencer l’enregistrement';
+
+      recordButton.classList.remove(
+        'recording'
+      );
+
+      if (mediaStream) {
+
+        mediaStream
+          .getTracks()
+          .forEach(
+            function(track) {
+              track.stop();
+            }
+          );
+
+        mediaStream = null;
+      }
+
+      showStatus(
+        'Tout a été effacé.'
+      );
+    }
+
+  </script>
+
+</body>
+</html>
