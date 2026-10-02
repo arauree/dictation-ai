@@ -47,6 +47,11 @@
       background: #f8f9fa;
     }
 
+    button:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
     .primary {
       background: #1a73e8;
       border-color: #1a73e8;
@@ -117,17 +122,11 @@
     Enregistrez votre voix puis transcrivez-la localement avec Whisper.
   </p>
 
-  <button
-    id="recordButton"
-    class="primary"
-    onclick="toggleRecording()">
-    Commencer l'enregistrement
+  <button id="recordButton" class="primary">
+    🎙️ Commencer l'enregistrement
   </button>
 
-  <button
-    id="transcribeButton"
-    onclick="transcribeAudio()"
-    disabled>
+  <button id="transcribeButton" disabled>
     Transcrire
   </button>
 
@@ -135,29 +134,20 @@
     id="transcript"
     placeholder="La transcription apparaîtra ici..."></textarea>
 
-  <button
-    onclick="sendToGoogleDocs()">
+  <button id="sendButton">
     Insérer dans Google Docs
   </button>
 
-  <button
-    onclick="clearAll()">
+  <button id="clearButton">
     Effacer
   </button>
 
-  <div
-    id="status"
-    class="status">
+  <div id="status" class="status">
     Prêt.
   </div>
 
-  <div
-    id="progress"
-    class="progress">
-    <div
-      id="progressBar"
-      class="progress-bar">
-    </div>
+  <div id="progress" class="progress">
+    <div id="progressBar" class="progress-bar"></div>
   </div>
 
   <p class="small">
@@ -174,7 +164,7 @@
 
 
     /* =====================================================
-       CONFIGURATION TRANSFORMERS.JS
+       CONFIGURATION
        ===================================================== */
 
     env.allowRemoteModels = true;
@@ -186,33 +176,32 @@
 
 
     /* =====================================================
-       COMMUNICATION AVEC LA SIDEBAR GOOGLE DOCS
+       ÉLÉMENTS
        ===================================================== */
 
-    const params =
-      new URLSearchParams(
-        window.location.search
-      );
+    const recordButton =
+      document.getElementById('recordButton');
 
-    const sessionToken =
-      params.get('token') || '';
+    const transcribeButton =
+      document.getElementById('transcribeButton');
 
+    const sendButton =
+      document.getElementById('sendButton');
 
-    function sendMessageToParent(payload) {
+    const clearButton =
+      document.getElementById('clearButton');
 
-      if (!window.opener) {
-        return;
-      }
+    const transcriptBox =
+      document.getElementById('transcript');
 
-      window.opener.postMessage(
-        {
-          source: 'google-docs-dictation',
-          token: sessionToken,
-          ...payload
-        },
-        '*'
-      );
-    }
+    const statusBox =
+      document.getElementById('status');
+
+    const progressBox =
+      document.getElementById('progress');
+
+    const progressBar =
+      document.getElementById('progressBar');
 
 
     /* =====================================================
@@ -228,35 +217,29 @@
     let transcriberPromise = null;
 
 
-    const recordButton =
-      document.getElementById(
-        'recordButton'
-      );
+    /* =====================================================
+       ÉVÉNEMENTS
+       ===================================================== */
 
-    const transcribeButton =
-      document.getElementById(
-        'transcribeButton'
-      );
+    recordButton.addEventListener(
+      'click',
+      toggleRecording
+    );
 
-    const transcriptBox =
-      document.getElementById(
-        'transcript'
-      );
+    transcribeButton.addEventListener(
+      'click',
+      transcribeAudio
+    );
 
-    const statusBox =
-      document.getElementById(
-        'status'
-      );
+    sendButton.addEventListener(
+      'click',
+      sendToGoogleDocs
+    );
 
-    const progressBox =
-      document.getElementById(
-        'progress'
-      );
-
-    const progressBar =
-      document.getElementById(
-        'progressBar'
-      );
+    clearButton.addEventListener(
+      'click',
+      clearAll
+    );
 
 
     /* =====================================================
@@ -264,8 +247,7 @@
        ===================================================== */
 
     function showStatus(message) {
-      statusBox.textContent =
-        message;
+      statusBox.textContent = message;
     }
 
 
@@ -316,8 +298,6 @@
         'Chargement de Whisper...'
       );
 
-      setProgress(0);
-
       transcriberPromise =
         pipeline(
           'automatic-speech-recognition',
@@ -338,7 +318,6 @@
                     info.progress
                   );
                 }
-
               }
           }
         );
@@ -399,13 +378,17 @@
       ) {
 
         showStatus(
-          'Votre navigateur ne permet pas l’accès au microphone.'
+          'Le microphone n’est pas disponible dans ce navigateur.'
         );
 
         return;
       }
 
       try {
+
+        showStatus(
+          'Demande d’accès au microphone...'
+        );
 
         mediaStream =
           await navigator.mediaDevices
@@ -428,7 +411,6 @@
               event.data &&
               event.data.size > 0
             ) {
-
               audioChunks.push(
                 event.data
               );
@@ -453,14 +435,14 @@
               false;
 
             recordButton.textContent =
-              'Refaire un enregistrement';
+              '🎙️ Refaire un enregistrement';
 
             recordButton.classList.remove(
               'recording'
             );
 
             showStatus(
-              'Enregistrement terminé.'
+              'Enregistrement terminé. Cliquez sur « Transcrire ».'
             );
 
             if (mediaStream) {
@@ -481,7 +463,7 @@
         mediaRecorder.start();
 
         recordButton.textContent =
-          'Arrêter';
+          '⏹️ Arrêter';
 
         recordButton.classList.add(
           'recording'
@@ -491,15 +473,24 @@
           true;
 
         showStatus(
-          'Enregistrement en cours...'
+          '🎙️ Enregistrement en cours...'
         );
 
       } catch (error) {
 
-        console.error(error);
+        console.error(
+          'Erreur microphone:',
+          error
+        );
 
         showStatus(
-          'Microphone refusé ou inaccessible.'
+          'Impossible d’accéder au microphone : ' +
+          (
+            error &&
+            error.message
+              ? error.message
+              : String(error)
+          )
         );
       }
     }
@@ -512,7 +503,6 @@
         mediaRecorder.state ===
           'recording'
       ) {
-
         mediaRecorder.stop();
       }
     }
@@ -585,7 +575,10 @@
 
       } catch (error) {
 
-        console.error(error);
+        console.error(
+          'Erreur transcription:',
+          error
+        );
 
         showStatus(
           'Erreur : ' +
@@ -622,7 +615,6 @@
         window.webkitAudioContext;
 
       if (!AudioContextClass) {
-
         throw new Error(
           'AudioContext indisponible.'
         );
@@ -643,14 +635,11 @@
       } finally {
 
         try {
-
           await context.close();
-
         } catch (error) {
           // Rien à faire.
         }
       }
-
 
       const sourceRate =
         audioBuffer.sampleRate;
@@ -693,12 +682,11 @@
       }
 
 
-      /* DÉJÀ 16 KHZ */
+      /* DÉJÀ EN 16 KHZ */
 
       if (
         sourceRate === 16000
       ) {
-
         return mono;
       }
 
@@ -719,7 +707,6 @@
 
       const ratio =
         sourceRate / 16000;
-
 
       for (
         let i = 0;
@@ -790,17 +777,32 @@
         return;
       }
 
-      sendMessageToParent({
-        type:
-          'VOICE_TRANSCRIPT',
+      if (window.opener) {
 
-        text:
-          text
-      });
+        window.opener.postMessage(
+          {
+            source:
+              'google-docs-dictation',
 
-      showStatus(
-        'Texte envoyé à Google Docs.'
-      );
+            type:
+              'VOICE_TRANSCRIPT',
+
+            text:
+              text
+          },
+          '*'
+        );
+
+        showStatus(
+          'Texte envoyé à Google Docs.'
+        );
+
+      } else {
+
+        showStatus(
+          'Cette page n’a pas été ouverte depuis Google Docs.'
+        );
+      }
     }
 
 
@@ -823,7 +825,7 @@
         false;
 
       recordButton.textContent =
-        'Commencer l’enregistrement';
+        '🎙️ Commencer l’enregistrement';
 
       recordButton.classList.remove(
         'recording'
@@ -841,6 +843,8 @@
 
         mediaStream = null;
       }
+
+      hideProgress();
 
       showStatus(
         'Tout a été effacé.'
